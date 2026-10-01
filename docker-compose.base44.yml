@@ -1,0 +1,21 @@
+services:
+  web:
+    image: node:22-slim
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    command: ["sh", "-ec", "apt-get update -qq && apt-get install -y -qq git >/dev/null && npm install && (sh /app/sync-submodules.sh &) && exec npm run dev"]
+    environment:
+      - PORT=3000
+      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS
+      - BASE44_PUBLIC_HOST_SUFFIX
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/systems').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

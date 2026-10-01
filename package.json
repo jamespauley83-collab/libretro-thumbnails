@@ -1,0 +1,16 @@
+{
+  "name": "libretro-thumbnail-browser",
+  "version": "1.0.0",
+  "description": "Web browser for the libretro-thumbnails collection",
+  "main": "server.js",
+  "scripts": {
+    "dev": "nodemon --watch server.js server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}
