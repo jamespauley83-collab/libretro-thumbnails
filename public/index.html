@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RetroArch Thumbnail Browser</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1>🎮 Thumbnail Browser</h1>
+        <input type="text" id="system-search" placeholder="Search systems..." class="search-input" />
+      </div>
+      <div class="system-list" id="system-list"></div>
+    </aside>
+    <main class="main-content">
+      <div class="content-header">
+        <h2 id="current-system">Select a system</h2>
+        <div class="type-tabs" id="type-tabs"></div>
+      </div>
+      <div class="thumbnail-grid" id="thumbnail-grid"></div>
+      <div class="pagination" id="pagination"></div>
+      <div class="empty-state" id="empty-state">
+        <p>Pick a system from the left to browse its thumbnails.</p>
+        <p class="hint">If no systems appear, the git submodules may not be initialized yet.</p>
+      </div>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
