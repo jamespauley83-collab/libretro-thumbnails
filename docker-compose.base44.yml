@@ -7,7 +7,7 @@ services:
     volumes:
       - ./:/app
       - /app/node_modules
-    command: ["sh", "-ec", "npm install && exec npm run dev"]
+    command: ["sh", "-ec", "apt-get update -qq && apt-get install -y -qq git >/dev/null && npm install && (sh /app/sync-submodules.sh &) && exec npm run dev"]
     environment:
       - PORT=3000
       - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS

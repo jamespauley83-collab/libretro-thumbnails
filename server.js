@@ -80,6 +80,38 @@ app.get('/img/:system/:type/:file', (req, res) => {
   res.sendFile(filePath);
 });
 
+// Sync status endpoint
+app.get('/api/sync-status', (req, res) => {
+  const statusFile = '/tmp/.sync-status';
+  const logFile = '/tmp/.sync-log';
+  let status = 'idle';
+  let lastSync = null;
+  let log = '';
+  try {
+    const raw = fs.readFileSync(statusFile, 'utf8').trim();
+    const parts = raw.split('|');
+    lastSync = parts[0] || null;
+    status = parts[1] || 'idle';
+  } catch {}
+  try {
+    log = fs.readFileSync(logFile, 'utf8').trim().split('\n').slice(-20).join('\n');
+  } catch {}
+  res.json({ status, lastSync, log });
+});
+
+// Manual sync trigger endpoint
+app.post('/api/sync', (req, res) => {
+  const { exec } = require('child_process');
+  exec('git submodule update --remote --depth=1', { cwd: REPO_ROOT }, (err, stdout, stderr) => {
+    if (err) {
+      return res.status(500).json({ error: 'Sync failed', details: stderr });
+    }
+    const ts = new Date().toISOString();
+    fs.writeFileSync('/tmp/.sync-status', `${ts}|done`);
+    res.json({ status: 'done', lastSync: ts, output: stdout });
+  });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Thumbnail browser running at http://0.0.0.0:${PORT}`);
 });

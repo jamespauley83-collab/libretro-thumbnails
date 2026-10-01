@@ -26,6 +26,12 @@ Initializing all submodules (~120) takes a long time; do it selectively.
 - `GET /api/thumbnails?system=X&type=Named_Boxarts&page=1&perPage=60` — paginated file list
 - `GET /img/:system/:type/:file` — serves an individual thumbnail image
 
+## Auto-Sync
+A background sync script (`sync-submodules.sh`) runs on container startup and every 30 minutes (configurable via `SYNC_INTERVAL` env var in seconds). It runs `git submodule update --remote --depth=1` to pull the latest commits for all initialized submodules.
+
+- `GET /api/sync-status` — returns current sync status, last sync timestamp, and recent log
+- `POST /api/sync` — triggers a manual sync
+
 ## Notes
 - No external credentials or secrets are required.
 - No database — all data is read from the filesystem.
