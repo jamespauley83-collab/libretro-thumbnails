@@ -4,7 +4,7 @@
   "description": "Web browser for the libretro-thumbnails collection",
   "main": "server.js",
   "scripts": {
-    "dev": "nodemon server.js",
+    "dev": "nodemon --watch server.js server.js",
     "start": "node server.js"
   },
   "dependencies": {
