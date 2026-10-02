@@ -39,14 +39,16 @@ function initialized(repoRoot, system) {
 
 // Run an argument array, never a shell command. Kill the entire git process
 // group on timeout so a stalled clone cannot keep running after a reported error.
-function runGit(repoRoot, systems, onLog, timeoutMs = 10 * 60 * 1000, signal) {
+function runGitCommand(repoRoot, args, onLog, timeoutMs, signal, captureStdout = false) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('Sync cancelled'));
+    if (timeoutMs <= 0) return reject(new Error('Download timed out after 10 minutes. Retry this system.'));
     const grouped = process.platform !== 'win32';
-    const child = spawn('git', ['--literal-pathspecs', 'submodule', 'update', '--init', '--remote', '--depth=1', '--', ...systems], {
+    const child = spawn('git', ['--literal-pathspecs', ...args], {
       cwd: repoRoot, detached: grouped, stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
     });
+    let output = '';
     let timedOut = false;
     const kill = () => {
       try { grouped ? process.kill(-child.pid, 'SIGKILL') : child.kill('SIGKILL'); }
@@ -54,17 +56,69 @@ function runGit(repoRoot, systems, onLog, timeoutMs = 10 * 60 * 1000, signal) {
     };
     const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
     signal?.addEventListener('abort', kill, { once: true });
-    for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => onLog(chunk.toString()));
-    child.once('error', err => { clearTimeout(timer); reject(err); });
+    child.stdout.on('data', chunk => { if (captureStdout) output += chunk.toString(); else onLog(chunk.toString()); });
+    child.stderr.on('data', chunk => onLog(chunk.toString()));
+    child.once('error', err => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', kill);
+      reject(err);
+    });
     child.once('close', code => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', kill);
       if (signal?.aborted) reject(new Error('Sync cancelled'));
       else if (timedOut) reject(new Error('Download timed out after 10 minutes. Retry this system.'));
       else if (code !== 0) reject(new Error(`Git exited with code ${code}. Check the sync log and retry.`));
-      else resolve();
+      else resolve(output);
     });
   });
+}
+
+async function runGit(repoRoot, systems, onLog, timeoutMs = 10 * 60 * 1000, signal) {
+  if (!systems.length) return;
+  // All preparation, initial clones and updates share the same job deadline.
+  const deadline = Date.now() + timeoutMs;
+  const git = (args, capture = false) => runGitCommand(repoRoot, args, onLog, deadline - Date.now(), signal, capture);
+  const index = await git(['ls-files', '--stage', '-z', '--', ...systems], true);
+  const records = index.split('\0').filter(Boolean).map(record => {
+    const [mode, hash, stage] = record.slice(0, record.indexOf('\t')).split(' ');
+    return { mode, hash, stage, path: record.slice(record.indexOf('\t') + 1) };
+  });
+  const gitlinks = new Set(records.filter(record => record.mode === '160000' && record.stage === '0').map(record => record.path));
+  const missing = systems.filter(system => !gitlinks.has(system));
+  if (missing.length) {
+    // The small production image has .gitmodules but no source gitlinks/history.
+    // Resolve a real commit and register only requested paths before cloning, so
+    // later runs use the same native submodule update path. Never
+    // initialize the whole catalogue or rewrite .gitmodules here.
+    const config = await git(['config', '--file', '.gitmodules', '--null', '--get-regexp', '^submodule\\..*\\.(path|url|branch)$'], true);
+    const declarations = new Map();
+    for (const record of config.split('\0').filter(Boolean)) {
+      const separator = record.indexOf('\n');
+      const key = record.slice(0, separator);
+      const suffix = key.lastIndexOf('.');
+      const name = key.slice(10, suffix);
+      if (!declarations.has(name)) declarations.set(name, {});
+      declarations.get(name)[key.slice(suffix + 1)] = record.slice(separator + 1);
+    }
+    for (const system of missing) {
+      const declaration = [...declarations.values()].find(entry => entry.path === system);
+      if (!declaration || !declaredSystems(repoRoot).includes(system)) throw new Error('Select a system declared in .gitmodules');
+      if (records.some(record => record.path === system || record.path.startsWith(system + '/'))) {
+        throw new Error(`Refusing to replace tracked files for ${system}`);
+      }
+      if (!declaration.url) throw new Error(`Missing repository URL for ${system}`);
+      const branch = declaration.branch === '.' ? (await git(['symbolic-ref', '--short', 'HEAD'], true)).trim() : declaration.branch;
+      const ref = branch ? `refs/heads/${branch}` : 'HEAD';
+      const remote = await git(['ls-remote', '--exit-code', '--', declaration.url, ref], true);
+      const commit = remote.split('\n').map(line => line.split('\t')).find(([, name]) => name === ref)?.[0];
+      if (!commit || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new Error(`Cannot resolve a commit for ${system}`);
+      await git(['update-index', '--add', '--cacheinfo', '160000', commit, system]);
+    }
+  }
+  // Include shallow branch tips so a declared main/master branch also works
+  // when it differs from the remote's default branch. Paths stay explicit.
+  await git(['submodule', 'update', '--init', '--remote', '--depth=1', '--no-single-branch', '--', ...systems]);
 }
 
 function createSyncManager(repoRoot, options = {}) {

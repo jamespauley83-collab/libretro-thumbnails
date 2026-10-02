@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 const { test } = require('node:test');
 const { createApp } = require('../server');
 const { createSyncManager, declaredSystems, runGit } = require('../submodule-sync');
@@ -176,6 +177,137 @@ test('real Git initializes only a literal selected path, with PNGs available thr
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
 });
 
+test('production metadata-only repository downloads, retries and updates only the selected system', async t => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'thumbnail-production-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const source = path.join(temp, 'source');
+  const root = path.join(temp, 'app');
+  const selected = "Selected [1], '; $(touch nope)";
+  const other = 'Selected 1';
+  const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+  for (const dir of [source, root]) {
+    fs.mkdirSync(dir);
+    git(dir, ['init', '-b', 'main']);
+    git(dir, ['config', 'user.name', 'Fixture']);
+    git(dir, ['config', 'user.email', 'fixture@example.invalid']);
+  }
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jL1sAAAAASUVORK5CYII=', 'base64');
+  fs.writeFileSync(path.join(source, 'README'), 'Default branch');
+  git(source, ['add', '.']);
+  git(source, ['commit', '-m', 'default']);
+  git(source, ['checkout', '-b', 'thumbnails']);
+  fs.mkdirSync(path.join(source, 'Named_Boxarts'));
+  fs.writeFileSync(path.join(source, 'Named_Boxarts', 'Game.png'), png);
+  git(source, ['add', '.']);
+  git(source, ['commit', '-m', 'thumbnails']);
+  git(source, ['checkout', 'main']);
+  for (const [name, system] of [['different.section', selected], ['untouched', other]]) {
+    for (const [key, value] of Object.entries({ path: system, url: pathToFileURL(source).href, branch: 'thumbnails', shallow: 'true' })) {
+      git(root, ['config', '--file', '.gitmodules', `submodule.${name}.${key}`, value]);
+    }
+  }
+  // This is the production Dockerfile's starting state: only .gitmodules is
+  // committed, with no original index, gitlinks, module history or image data.
+  git(root, ['add', '.gitmodules']);
+  git(root, ['commit', '-m', 'production metadata']);
+  const originalModules = fs.readFileSync(path.join(root, '.gitmodules'));
+  assert.equal(git(root, ['ls-files', '--stage']).includes('160000'), false);
+  const oldProtocol = process.env.GIT_ALLOW_PROTOCOL;
+  process.env.GIT_ALLOW_PROTOCOL = 'file';
+  t.after(() => {
+    if (oldProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+    else process.env.GIT_ALLOW_PROTOCOL = oldProtocol;
+  });
+  const manager = createSyncManager(root);
+  t.after(() => manager.stop());
+  manager.start({ intervalSeconds: 0 });
+  assert.equal((await done(manager)).status, 'done');
+  manager.request();
+  await done(manager);
+  assert.equal(fs.existsSync(path.join(root, selected)), false);
+  assert.equal(fs.existsSync(path.join(root, other)), false);
+
+  const server = createApp(root, { syncManager: manager }).listen(0, '127.0.0.1');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = () => fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system: selected }) });
+  const initial = (await (await fetch(base + '/api/systems')).json()).systems;
+  assert.equal(initial.length, 2);
+  assert.ok(initial.every(system => system.downloadable && system.total === 0));
+
+  // A failed metadata lookup must be visible and leave retry available.
+  fs.renameSync(source, source + '-offline');
+  const lastSuccess = manager.getStatus().lastSync;
+  assert.equal((await post()).status, 202);
+  assert.equal((await done(manager)).status, 'error');
+  assert.equal(manager.getStatus().lastSync, lastSuccess);
+  assert.equal(git(root, ['ls-files', '--stage']).includes('160000'), false);
+  fs.renameSync(source + '-offline', source);
+  assert.equal((await post()).status, 202);
+  const result = await done(manager);
+  assert.equal(result.status, 'done', result.log);
+  assert.equal(git(path.join(root, selected), ['rev-parse', '--is-shallow-repository']), 'true');
+  assert.equal(fs.existsSync(path.join(root, other)), false);
+  assert.deepEqual(fs.readFileSync(path.join(root, '.gitmodules')), originalModules);
+  const index = git(root, ['ls-files', '--stage', '-z']).split('\0').filter(line => line.startsWith('160000 '));
+  assert.equal(index.length, 1);
+  assert.ok(index[0].endsWith('\t' + selected));
+  const response = await fetch(`${base}/img/${encodeURIComponent(selected)}/Named_Boxarts/Game.png`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  git(source, ['checkout', 'thumbnails']);
+  fs.writeFileSync(path.join(source, 'Named_Boxarts', 'New.png'), png);
+  git(source, ['add', '.']);
+  git(source, ['commit', '-m', 'new thumbnail']);
+  git(source, ['checkout', 'main']);
+  // Restart and subsequent untargeted updates must reuse the new gitlink,
+  // follow the declared non-default branch and leave the other system absent.
+  const restarted = createSyncManager(root);
+  t.after(() => restarted.stop());
+  restarted.start({ intervalSeconds: 0 });
+  const updated = await done(restarted);
+  assert.equal(updated.status, 'done', updated.log);
+  const systems = (await (await fetch(base + '/api/systems')).json()).systems;
+  assert.equal(systems.find(system => system.name === selected).total, 2);
+  assert.equal(systems.find(system => system.name === other).total, 0);
+  assert.equal(fs.existsSync(path.join(root, other)), false);
+  assert.equal(fs.existsSync(path.join(root, 'nope')), false);
+  assert.deepEqual(fs.readFileSync(path.join(root, '.gitmodules')), originalModules);
+
+  // Missing branches fail before adding a gitlink; removing the optional
+  // branch setting retries against the remote's default HEAD.
+  for (const [key, value] of Object.entries({ path: 'Default Branch', url: pathToFileURL(source).href, branch: 'not-in-source' })) {
+    git(root, ['config', '--file', '.gitmodules', `submodule.default.${key}`, value]);
+  }
+  manager.request('Default Branch');
+  assert.equal((await done(manager)).status, 'error');
+  assert.equal(git(root, ['ls-files', '--', 'Default Branch']), '');
+  git(root, ['config', '--file', '.gitmodules', '--unset', 'submodule.default.branch']);
+  manager.request('Default Branch');
+  const defaultResult = await done(manager);
+  assert.equal(defaultResult.status, 'done', defaultResult.log);
+  assert.equal(git(path.join(root, 'Default Branch'), ['rev-parse', 'HEAD']), git(source, ['rev-parse', 'main']));
+  assert.equal(fs.existsSync(path.join(root, other)), false);
+});
+
+test('metadata bootstrap does not overwrite an existing tracked file', async t => {
+  const root = fixture(t, ['Selected']);
+  execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
+  fs.writeFileSync(path.join(root, 'Selected'), 'Keep this tracked file');
+  execFileSync('git', ['add', '.'], { cwd: root, stdio: 'pipe' });
+  fs.unlinkSync(path.join(root, 'Selected'));
+  const before = execFileSync('git', ['ls-files', '--stage', '-z'], { cwd: root });
+  const manager = createSyncManager(root);
+  manager.request('Selected');
+  const result = await done(manager);
+  assert.equal(result.status, 'error');
+  assert.match(result.error, /Refusing to replace tracked files/);
+  assert.deepEqual(execFileSync('git', ['ls-files', '--stage', '-z'], { cwd: root }), before);
+  assert.equal(fs.existsSync(path.join(root, 'Selected')), false);
+});
+
 test('timeout and cancellation stop Git and fail instead of reporting success', async t => {
   const root = fixture(t);
   const bin = path.join(root, 'bin');
@@ -189,5 +321,9 @@ test('timeout and cancellation stop Git and fail instead of reporting success', 
     const result = runGit(root, [DEFAULT_SYSTEM], () => {}, 30000, controller.signal);
     controller.abort();
     await assert.rejects(result, /cancelled/);
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase "$2" in\nls-files) sleep 0.1; printf "160000 1111111111111111111111111111111111111111 0\\tSelected\\0" ;;\nsubmodule) echo updating >&2; sleep 0.1 ;;\nesac\n', { mode: 0o755 });
+    let log = '';
+    await assert.rejects(runGit(root, ['Selected'], text => { log += text; }, 150), /timed out/);
+    assert.match(log, /updating/); // Both commands fit separately, not together.
   } finally { process.env.PATH = oldPath; }
 });
