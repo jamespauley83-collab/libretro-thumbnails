@@ -91,6 +91,23 @@ The shell helper no longer starts an independent background Git loop. Docker and
 this management app to trusted users, since downloading a system uses server
 storage and network bandwidth. No credentials are required for public thumbnails.
 
+#### Production image
+
+```sh
+docker build -t libretro-thumbnail-browser .
+docker run --rm -p 3000:3000 libretro-thumbnail-browser
+```
+
+The image contains the app and `.gitmodules` catalogue, not thumbnail collections
+or the source repository's Git history. On the first explicit download, the sync
+manager resolves that system's declared remote branch (or default HEAD), records
+its gitlink in the runtime index, and runs the normal submodule update. Clones
+are shallow, including branch tips so declared non-default branches can update.
+Startup and untargeted syncs still update only previously initialized systems.
+Downloads need writable runtime storage and can consume several GB per system;
+the commands above use disposable container storage, so removing the container
+also removes its downloads. The build itself does not download any collections.
+
 ### Testing the Thumbnail Browser
 
 The Node.js browser has local HTTP regression tests with isolated temporary
@@ -101,6 +118,11 @@ npm ci
 npm test
 npm run check
 ```
+
+The real-Git fixtures cover both a normal checkout and the production image's
+fresh `.gitmodules`-only repository, including explicit selection, shallow
+downloads, failed lookup/retry, restart updates, and PNG serving over HTTP.
+They use tiny local repositories and never download public collections.
 
 Use Node.js 22 or newer. The tests create filesystem symlinks, so the test user
 must have permission to create them. The server lists and serves only regular

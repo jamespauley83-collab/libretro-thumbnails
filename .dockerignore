@@ -1,0 +1,7 @@
+.git
+node_modules
+test
+**/Named_Boxarts
+**/Named_Titles
+**/Named_Snaps
+**/Named_Logos
