@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "dev": "nodemon --watch server.js server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check test/server.test.js && node --check public/app.js"
   },
   "dependencies": {
     "express": "^4.21.0"
