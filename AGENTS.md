@@ -33,6 +33,12 @@ selected-system request. Updates run every `SYNC_INTERVAL` seconds (default
 1800; 0 disables the interval). Git jobs are limited to ten minutes and failures
 remain visible. Do not add a separate background sync loop.
 
+## Auto-Clear on Shutdown
+On real shutdown (SIGTERM/SIGINT) the server stops any running sync, waits for it
+to settle, then deinitializes all downloaded submodules (`git submodule deinit
+--force`) so thumbnail content is removed. nodemon restarts (SIGUSR2) preserve
+downloads — only a full stop clears them.
+
 - `GET /api/sync-status` — returns current status, last successful sync, and error/log
 - `POST /api/sync` — returns 202 and starts an asynchronous sync; JSON `{system}`
   initializes/updates exactly that declared system; omission updates loaded ones only

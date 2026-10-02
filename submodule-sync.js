@@ -37,6 +37,22 @@ function initialized(repoRoot, system) {
   } catch { return false; }
 }
 
+// Remove the working-tree content of every initialized submodule so downloaded
+// thumbnails do not persist after the server stops. Best-effort: failures are
+// logged but never prevent shutdown.
+function deinitialize(repoRoot, onLog) {
+  const systems = declaredSystems(repoRoot).filter(name => initialized(repoRoot, name));
+  if (systems.length === 0) return;
+  try {
+    execFileSync('git', ['submodule', 'deinit', '--force', '--', ...systems], {
+      cwd: repoRoot, encoding: 'utf8', timeout: 30000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    });
+  } catch (err) {
+    onLog?.(err.stderr?.toString().trim() || err.message);
+  }
+}
+
 // Run an argument array, never a shell command. Kill the entire git process
 // group on timeout so a stalled clone cannot keep running after a reported error.
 function runGit(repoRoot, systems, onLog, timeoutMs = 10 * 60 * 1000, signal) {
@@ -69,6 +85,7 @@ function runGit(repoRoot, systems, onLog, timeoutMs = 10 * 60 * 1000, signal) {
 
 function createSyncManager(repoRoot, options = {}) {
   const execute = options.runGit || runGit;
+  const deinit = options.deinit || deinitialize;
   let active = null;
   let timer = null;
   let controller = null;
@@ -118,7 +135,13 @@ function createSyncManager(repoRoot, options = {}) {
     }
   }
 
-  return { request, start, getStatus: () => ({ ...status }), wait: () => active || Promise.resolve(), stop: () => { clearInterval(timer); controller?.abort(); } };
+  return {
+    request, start,
+    getStatus: () => ({ ...status }),
+    wait: () => active || Promise.resolve(),
+    stop: () => { clearInterval(timer); controller?.abort(); },
+    cleanup: () => deinit(repoRoot, text => { status = { ...status, log: (status.log + text).slice(-8000) }; })
+  };
 }
 
-module.exports = { createSyncManager, declaredSystems, initialized, runGit };
+module.exports = { createSyncManager, declaredSystems, initialized, runGit, deinitialize };

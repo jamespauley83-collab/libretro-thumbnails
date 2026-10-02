@@ -163,11 +163,22 @@ if (require.main === module) {
     });
     console.log(`Thumbnail browser running at http://0.0.0.0:${PORT}`);
   });
-  const shutdown = () => { app.locals.sync.stop(); server.close(); };
+  let shuttingDown = false;
+  // On real shutdown, stop any running sync, wait for it to settle, then
+  // deinitialize all downloaded submodules so thumbnails don't persist.
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.locals.sync.stop();
+    await app.locals.sync.wait();
+    app.locals.sync.cleanup();
+    server.close();
+  };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
   // nodemon uses SIGUSR2 for restarts. Stop and reap the detached Git process
-  // before allowing another server instance to start its own sync.
+  // before allowing another server instance to start its own sync. Downloads
+  // are preserved across restarts — only a real shutdown clears them.
   process.once('SIGUSR2', () => {
     app.locals.sync.stop();
     app.locals.sync.wait().finally(() => process.kill(process.pid, 'SIGUSR2'));

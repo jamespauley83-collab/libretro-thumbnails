@@ -5,7 +5,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { test } = require('node:test');
 const { createApp } = require('../server');
-const { createSyncManager, declaredSystems, runGit } = require('../submodule-sync');
+const { createSyncManager, declaredSystems, initialized, runGit } = require('../submodule-sync');
 
 const DEFAULT_SYSTEM = 'Nintendo - Nintendo Entertainment System';
 const OTHER = "Other [system] ' ; $(touch nope)";
@@ -174,6 +174,49 @@ test('real Git initializes only a literal selected path, with PNGs available thr
   const response = await fetch(base + '/img/System%20%5B1%5D/Named_Boxarts/Game.png');
   assert.equal(response.status, 200);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+});
+
+test('cleanup deinitializes downloaded submodules so content is removed', async t => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'thumbnail-cleanup-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const source = path.join(temp, 'source');
+  const original = path.join(temp, 'original');
+  const checkout = path.join(temp, 'checkout');
+  const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+  for (const dir of [source, original]) {
+    fs.mkdirSync(dir);
+    git(dir, ['init', '-b', 'master']);
+    git(dir, ['config', 'user.name', 'Fixture']);
+    git(dir, ['config', 'user.email', 'fixture@example.invalid']);
+  }
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jL1sAAAAASUVORK5CYII=', 'base64');
+  fs.mkdirSync(path.join(source, 'Named_Boxarts'));
+  fs.writeFileSync(path.join(source, 'Named_Boxarts', 'Game.png'), png);
+  git(source, ['add', '.']);
+  git(source, ['commit', '-m', 'fixture']);
+  git(original, ['-c', 'protocol.file.allow=always', 'submodule', 'add', source, 'System [1]']);
+  git(original, ['commit', '-am', 'fixtures']);
+  git(temp, ['clone', original, checkout]);
+  const manager = createSyncManager(checkout, { runGit: async (root, systems, log) => {
+    const old = process.env.GIT_ALLOW_PROTOCOL;
+    process.env.GIT_ALLOW_PROTOCOL = 'file';
+    try { await runGit(root, systems, log); }
+    finally { if (old === undefined) delete process.env.GIT_ALLOW_PROTOCOL; else process.env.GIT_ALLOW_PROTOCOL = old; }
+  } });
+  manager.request('System [1]');
+  const result = await done(manager);
+  assert.equal(result.status, 'done', result.log);
+  assert.ok(fs.existsSync(path.join(checkout, 'System [1]', 'Named_Boxarts', 'Game.png')));
+  assert.ok(initialized(checkout, 'System [1]'));
+  manager.cleanup();
+  assert.ok(!fs.existsSync(path.join(checkout, 'System [1]', 'Named_Boxarts', 'Game.png')), 'Thumbnail should be removed');
+  assert.ok(!initialized(checkout, 'System [1]'), 'Submodule should be deinitialized');
+});
+
+test('cleanup is a no-op when nothing is downloaded', async t => {
+  const root = fixture(t);
+  const manager = createSyncManager(root, { runGit: async () => assert.fail('Git must not run') });
+  assert.doesNotThrow(() => manager.cleanup());
 });
 
 test('timeout and cancellation stop Git and fail instead of reporting success', async t => {
