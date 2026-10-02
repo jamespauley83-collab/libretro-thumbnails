@@ -57,6 +57,40 @@ Alternatively, the script below will maintain shallow clones (depth=1) and check
 sh update_modules.sh
 ```
 
+### Running the Thumbnail Browser
+
+```sh
+docker compose -f docker-compose.base44.yml up -d --build
+```
+
+The browser lists declared systems immediately, including those whose thumbnails
+have not been downloaded. No new systems are downloaded automatically. Select a system, then use
+**Download this system** (or **Update this system**) to load one system at a time.
+A full system can use several GB and take several minutes; the UI warns before
+you start a download. Status,
+failures, and retry controls stay visible; lists refresh when a sync finishes.
+Do not initialize all ~120 systems unless you have planned for their disk usage.
+
+`SYNC_INTERVAL` is the
+update interval in seconds (default 1800; 0 disables periodic updates). Startup,
+manual, and periodic work share one serialized manager. After initialization,
+periodic and untargeted manual syncs update only already-initialized systems.
+Each Git job has a ten-minute timeout; errors are never reported as successful
+syncs. A server restart clears its in-memory status; it never starts a new collection.
+
+- `GET /api/systems` includes `downloadable` and zero-count declared systems
+- `POST /api/sync` with JSON `{ "system": "Nintendo - Nintendo Entertainment System" }`
+  starts that one system; an omitted system updates downloaded systems only
+- A sync request returns HTTP 202 immediately; HTTP 409 means another sync is running
+- `GET /api/sync-status` returns progress, last successful sync, and any error/log
+- `sh sync-submodules.sh "Nintendo - Nintendo Entertainment System"` requests the
+  same serialized sync from a running server (without an argument, updates loaded systems)
+
+The shell helper no longer starts an independent background Git loop. Docker and
+`npm start`/`npm run dev` all use the server-owned scheduler. Restrict access to
+this management app to trusted users, since downloading a system uses server
+storage and network bandwidth. No credentials are required for public thumbnails.
+
 ### Testing the Thumbnail Browser
 
 The Node.js browser has local HTTP regression tests with isolated temporary

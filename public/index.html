@@ -18,13 +18,18 @@
     <main class="main-content">
       <div class="content-header">
         <h2 id="current-system">Select a system</h2>
+        <div class="system-actions">
+          <button id="sync-system" type="button" hidden>Download this system</button>
+          <span id="sync-status" role="status" aria-live="polite"></span>
+          <span id="download-warning" hidden>A full system can use several GB and take several minutes. Only the selected system will be downloaded.</span>
+        </div>
         <div class="type-tabs" id="type-tabs"></div>
       </div>
       <div class="thumbnail-grid" id="thumbnail-grid"></div>
       <div class="pagination" id="pagination"></div>
       <div class="empty-state" id="empty-state">
         <p>Pick a system from the left to browse its thumbnails.</p>
-        <p class="hint">If no systems appear, the git submodules may not be initialized yet.</p>
+        <p class="hint">Select a system and choose Download to add it. A full system can use several GB.</p>
       </div>
     </main>
   </div>

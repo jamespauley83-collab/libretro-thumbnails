@@ -12,7 +12,7 @@ This is the `libretro-thumbnails` repository — a collection of RetroArch thumb
 ```bash
 docker compose -f docker-compose.base44.yml up -d --build
 ```
-The app listens on port 3000. It scans the repo directory at runtime, so only initialized git submodules will appear in the browser.
+The app listens on port 3000. It lists declared systems immediately; downloaded images are scanned from the repo at runtime. Downloads are explicit and show a storage warning; no systems are initialized automatically by default.
 
 ## Initializing Submodules
 Submodules are shallow clones. To populate thumbnails for a system:
@@ -22,15 +22,27 @@ git submodule update --init --depth=1 "Nintendo - Nintendo Entertainment System"
 Initializing all submodules (~120) takes a long time; do it selectively.
 
 ## API Endpoints
-- `GET /api/systems` — lists all systems with thumbnail counts
+- `GET /api/systems` — lists declared/downloaded systems with thumbnail counts and a `downloadable` flag
 - `GET /api/thumbnails?system=X&type=Named_Boxarts&page=1&perPage=60` — paginated file list
 - `GET /img/:system/:type/:file` — serves an individual thumbnail image
 
 ## Auto-Sync
-A background sync script (`sync-submodules.sh`) runs on container startup and every 30 minutes (configurable via `SYNC_INTERVAL` env var in seconds). It runs `git submodule update --remote --depth=1` to pull the latest commits for all initialized submodules.
+The server owns one serialized sync manager (`submodule-sync.js`). Startup and
+periodic jobs update only initialized systems. New collections require an explicit
+selected-system request. Updates run every `SYNC_INTERVAL` seconds (default
+1800; 0 disables the interval). Git jobs are limited to ten minutes and failures
+remain visible. Do not add a separate background sync loop.
 
-- `GET /api/sync-status` — returns current sync status, last sync timestamp, and recent log
-- `POST /api/sync` — triggers a manual sync
+- `GET /api/sync-status` — returns current status, last successful sync, and error/log
+- `POST /api/sync` — returns 202 and starts an asynchronous sync; JSON `{system}`
+  initializes/updates exactly that declared system; omission updates loaded ones only
+- `sh sync-submodules.sh [system]` — asks the running server to perform that same sync
+
+## Testing
+
+Run `npm test`, `npm run check`, and `git diff --check`. Tests include isolated
+real-Git initialization fixtures and the existing image path/symlink regression
+suite; they do not download public thumbnail repositories.
 
 ## Notes
 - No external credentials or secrets are required.

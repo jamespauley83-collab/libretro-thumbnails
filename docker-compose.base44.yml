@@ -7,9 +7,10 @@ services:
     volumes:
       - ./:/app
       - /app/node_modules
-    command: ["sh", "-ec", "apt-get update -qq && apt-get install -y -qq git >/dev/null && npm install && (sh /app/sync-submodules.sh &) && exec npm run dev"]
+    command: ["sh", "-ec", "apt-get update -qq && apt-get install -y -qq git >/dev/null && npm install && exec npm run dev"]
     environment:
       - PORT=3000
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-1800}
       - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS
       - BASE44_PUBLIC_HOST_SUFFIX
     restart: on-failure

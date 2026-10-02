@@ -287,3 +287,10 @@ body {
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* Download controls */
+.system-actions { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.system-actions button { padding: 8px 14px; background: var(--accent); color: white; border: 0; border-radius: var(--radius); cursor: pointer; }
+.system-actions button:disabled { opacity: 0.5; cursor: wait; }
+#download-warning { font-size: 13px; color: var(--text-dim); flex-basis: 100%; }
+#sync-status { font-size: 13px; color: var(--text-dim); overflow-wrap: anywhere; }
