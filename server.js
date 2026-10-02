@@ -141,6 +141,16 @@ function createApp(repoRoot = __dirname, options = {}) {
 
   app.get('/api/sync-status', (req, res) => res.json(sync.getStatus()));
 
+  // Remove downloaded content for one system (git submodule deinit).
+  app.delete('/api/content', (req, res) => {
+    try {
+      sync.clear(req.body?.system);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(err.statusCode || 500).json({ error: err.message });
+    }
+  });
+
   // Select one declared system to download, or update already-downloaded ones.
   // Return promptly; the UI follows completion through /api/sync-status.
   app.post('/api/sync', (req, res) => {

@@ -118,7 +118,27 @@ function createSyncManager(repoRoot, options = {}) {
     }
   }
 
-  return { request, start, getStatus: () => ({ ...status }), wait: () => active || Promise.resolve(), stop: () => { clearInterval(timer); controller?.abort(); } };
+  function clear(system) {
+    const known = declaredSystems(repoRoot);
+    if (system === undefined || !known.includes(system)) {
+      const err = new Error('Select a system declared in .gitmodules');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (active) {
+      const err = new Error('A sync is already running. Please wait for it to finish.');
+      err.statusCode = 409;
+      throw err;
+    }
+    if (!initialized(repoRoot, system)) {
+      const err = new Error('This system has no downloaded content');
+      err.statusCode = 400;
+      throw err;
+    }
+    execFileSync('git', ['submodule', 'deinit', '-f', '--', system], { cwd: repoRoot, timeout: 30000, stdio: 'pipe' });
+  }
+
+  return { request, clear, start, getStatus: () => ({ ...status }), wait: () => active || Promise.resolve(), stop: () => { clearInterval(timer); controller?.abort(); } };
 }
 
 module.exports = { createSyncManager, declaredSystems, initialized, runGit };

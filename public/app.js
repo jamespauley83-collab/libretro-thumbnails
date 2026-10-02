@@ -8,6 +8,7 @@ const state = {
   thumbnails: [],
   sync: null,
   submittingSync: false,
+  submittingClear: false,
   thumbnailRequest: 0,
   syncRequest: 0,
   refreshedSyncRevision: null,
@@ -29,6 +30,7 @@ const thumbnailGrid = document.getElementById('thumbnail-grid');
 const pagination = document.getElementById('pagination');
 const emptyState = document.getElementById('empty-state');
 const syncButton = document.getElementById('sync-system');
+const clearButton = document.getElementById('clear-system');
 const syncStatus = document.getElementById('sync-status');
 const downloadWarning = document.getElementById('download-warning');
 
@@ -198,8 +200,10 @@ function openLightbox(url, name) {
 function renderSync() {
   const system = state.systems.find(s => s.name === state.selectedSystem);
   syncButton.hidden = !system?.downloadable;
+  clearButton.hidden = !system?.total;
   downloadWarning.hidden = !system?.downloadable || system.total > 0;
   syncButton.disabled = state.submittingSync || state.sync?.status === 'running';
+  clearButton.disabled = state.submittingClear || state.sync?.status === 'running';
   syncButton.textContent = system?.total ? 'Update this system' : 'Download this system';
   if (state.sync?.status === 'running') {
     syncStatus.textContent = state.sync.system ? `Downloading ${state.sync.system}…` : 'Updating downloaded systems…';
@@ -266,6 +270,29 @@ async function pollSync() {
   }
 }
 
+async function clearContent() {
+  if (!state.selectedSystem || state.submittingClear) return;
+  if (!confirm(`Clear all downloaded content for ${state.selectedSystem}?`)) return;
+  state.submittingClear = true;
+  renderSync();
+  try {
+    const response = await fetch('/api/content', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system: state.selectedSystem })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Unable to clear content');
+    await fetchSystems(true);
+    renderTypeTabs();
+    await fetchThumbnails();
+  } catch (err) {
+    syncStatus.textContent = err.message;
+  } finally {
+    state.submittingClear = false;
+    clearButton.disabled = state.sync?.status === 'running';
+  }
+}
+
 // Helpers
 function escapeHtml(str) {
   const div = document.createElement('div');
@@ -279,6 +306,7 @@ function escapeAttr(str) {
 // Event listeners
 systemSearch.addEventListener('input', renderSystems);
 syncButton.addEventListener('click', startSync);
+clearButton.addEventListener('click', clearContent);
 
 // Init
 fetchSystems().then(pollSync);
