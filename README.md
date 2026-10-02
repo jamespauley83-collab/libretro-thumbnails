@@ -57,6 +57,29 @@ Alternatively, the script below will maintain shallow clones (depth=1) and check
 sh update_modules.sh
 ```
 
+### Testing the Thumbnail Browser
+
+The Node.js browser has local HTTP regression tests with isolated temporary
+fixtures; no thumbnail submodules or running deployment are needed:
+
+```sh
+npm ci
+npm test
+npm run check
+```
+
+Use Node.js 22 or newer. The tests create filesystem symlinks, so the test user
+must have permission to create them. The server lists and serves only regular
+PNG files in the four recognized thumbnail-type directories of eligible
+non-hidden top-level system directories. System names must exactly match a
+real directory; symlink systems, type directories, and image files are excluded.
+Spaces, Unicode, punctuation in valid filenames, and uppercase `.PNG` remain
+supported. Uninitialized systems and missing thumbnail types produce empty lists.
+
+The repository and its parent directories must remain trusted: path validation
+is not a sandbox against a local process that can concurrently replace files or
+directories. Run the browser with only the filesystem permissions it needs.
+
 ### Testing for Restricted Characters
 
 To check for files with invalid file names, use the following command....
