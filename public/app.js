@@ -6,6 +6,11 @@ const state = {
   perPage: 60,
   total: 0,
   thumbnails: [],
+  sync: null,
+  submittingSync: false,
+  thumbnailRequest: 0,
+  syncRequest: 0,
+  refreshedSyncRevision: null,
 };
 
 const THUMB_TYPES = [
@@ -23,20 +28,27 @@ const typeTabs = document.getElementById('type-tabs');
 const thumbnailGrid = document.getElementById('thumbnail-grid');
 const pagination = document.getElementById('pagination');
 const emptyState = document.getElementById('empty-state');
+const syncButton = document.getElementById('sync-system');
+const syncStatus = document.getElementById('sync-status');
+const downloadWarning = document.getElementById('download-warning');
 
 // Fetch systems
-async function fetchSystems() {
-  systemList.innerHTML = '<div class="loading">Loading systems...</div>';
+async function fetchSystems(quiet = false) {
+  if (!quiet) systemList.innerHTML = '<div class="loading">Loading systems...</div>';
   try {
     const res = await fetch('/api/systems');
+    if (!res.ok) throw new Error('Unable to load systems');
     const data = await res.json();
     state.systems = data.systems;
     renderSystems();
+    renderSync();
     if (state.systems.length === 0) {
-      systemList.innerHTML = '<div class="loading">No systems found. Submodules may not be initialized.</div>';
+      systemList.innerHTML = '<div class="loading">No thumbnail systems are configured in this checkout.</div>';
     }
+    return true;
   } catch (err) {
-    systemList.innerHTML = '<div class="loading">Error loading systems.</div>';
+    systemList.innerHTML = '<div class="loading">Error loading systems. Reload to retry.</div>';
+    return false;
   }
 }
 
@@ -47,7 +59,7 @@ function renderSystems() {
   systemList.innerHTML = filtered.map(s => `
     <div class="system-item ${state.selectedSystem === s.name ? 'active' : ''}" data-system="${escapeAttr(s.name)}">
       <span>${escapeHtml(s.name)}</span>
-      <span class="count">${s.total}</span>
+      <span class="count">${s.total || 'Download'}</span>
     </div>
   `).join('');
 
@@ -61,11 +73,13 @@ function renderSystems() {
 
 async function selectSystem(name) {
   state.selectedSystem = name;
-  state.selectedType = 'Named_Boxarts';
+  const system = state.systems.find(s => s.name === name);
+  state.selectedType = THUMB_TYPES.find(t => system?.types[t.key] > 0)?.key || 'Named_Boxarts';
   state.page = 1;
   currentSystem.textContent = name;
   emptyState.classList.add('hidden');
   renderSystems();
+  renderSync();
   renderTypeTabs();
   await fetchThumbnails();
 }
@@ -96,6 +110,13 @@ function renderTypeTabs() {
 
 async function fetchThumbnails() {
   if (!state.selectedSystem) return;
+  const requestId = ++state.thumbnailRequest;
+  const system = state.systems.find(s => s.name === state.selectedSystem);
+  if (system?.total === 0) {
+    thumbnailGrid.innerHTML = '<div class="loading">Thumbnails are not downloaded yet. Use Download this system above.</div>';
+    pagination.innerHTML = '';
+    return;
+  }
   thumbnailGrid.innerHTML = '<div class="loading">Loading thumbnails...</div>';
   pagination.innerHTML = '';
 
@@ -108,12 +129,15 @@ async function fetchThumbnails() {
 
   try {
     const res = await fetch('/api/thumbnails?' + params);
+    if (!res.ok) throw new Error('Unable to load thumbnails');
     const data = await res.json();
+    if (requestId !== state.thumbnailRequest) return;
     state.thumbnails = data.thumbnails;
     state.total = data.total;
     renderThumbnails();
     renderPagination();
   } catch (err) {
+    if (requestId !== state.thumbnailRequest) return;
     thumbnailGrid.innerHTML = '<div class="loading">Error loading thumbnails.</div>';
   }
 }
@@ -171,6 +195,77 @@ function openLightbox(url, name) {
   document.body.appendChild(lb);
 }
 
+function renderSync() {
+  const system = state.systems.find(s => s.name === state.selectedSystem);
+  syncButton.hidden = !system?.downloadable;
+  downloadWarning.hidden = !system?.downloadable || system.total > 0;
+  syncButton.disabled = state.submittingSync || state.sync?.status === 'running';
+  syncButton.textContent = system?.total ? 'Update this system' : 'Download this system';
+  if (state.sync?.status === 'running') {
+    syncStatus.textContent = state.sync.system ? `Downloading ${state.sync.system}…` : 'Updating downloaded systems…';
+  } else if (state.sync?.status === 'error') {
+    syncStatus.textContent = `Download failed: ${state.sync.error} Select the system and retry.`;
+  } else if (state.sync?.status === 'done') {
+    syncStatus.textContent = 'Sync complete';
+  } else {
+    syncStatus.textContent = '';
+  }
+}
+
+async function startSync() {
+  if (!state.selectedSystem || state.submittingSync || state.sync?.status === 'running') return;
+  state.submittingSync = true;
+  const requestId = ++state.syncRequest;
+  renderSync();
+  try {
+    const response = await fetch('/api/sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system: state.selectedSystem })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Unable to start download');
+    if (requestId !== state.syncRequest) return;
+    state.sync = result;
+    renderSync();
+  } catch (err) {
+    syncStatus.textContent = err.message;
+  } finally {
+    state.submittingSync = false;
+    syncButton.disabled = state.sync?.status === 'running';
+  }
+}
+
+async function pollSync() {
+  const requestId = state.submittingSync ? null : ++state.syncRequest;
+  try {
+    if (requestId === null) return;
+    const response = await fetch('/api/sync-status');
+    if (!response.ok) throw new Error('Unable to check download status');
+    const result = await response.json();
+    if (requestId !== state.syncRequest) return;
+    const refreshKey = JSON.stringify([result.revision, result.lastSync, result.error]);
+    const changed = refreshKey !== state.refreshedSyncRevision;
+    state.sync = result;
+    renderSync();
+    if (changed && ['done', 'error'].includes(result.status)) {
+      if (!await fetchSystems(true)) return;
+      state.refreshedSyncRevision = refreshKey;
+      if (state.selectedSystem) {
+        const system = state.systems.find(s => s.name === state.selectedSystem);
+        if (!system?.types[state.selectedType]) {
+          state.selectedType = THUMB_TYPES.find(t => system?.types[t.key] > 0)?.key || 'Named_Boxarts';
+        }
+        renderTypeTabs();
+        await fetchThumbnails();
+      }
+    }
+  } catch (err) {
+    syncStatus.textContent = 'Cannot check download status. Retrying…';
+  } finally {
+    setTimeout(pollSync, 2000);
+  }
+}
+
 // Helpers
 function escapeHtml(str) {
   const div = document.createElement('div');
@@ -178,11 +273,12 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 function escapeAttr(str) {
-  return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // Event listeners
 systemSearch.addEventListener('input', renderSystems);
+syncButton.addEventListener('click', startSync);
 
 // Init
-fetchSystems();
+fetchSystems().then(pollSync);

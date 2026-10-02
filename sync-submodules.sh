@@ -1,32 +1,15 @@
-#!/usr/bin/env bash
-# Periodically updates all initialized git submodules to their latest remote commits.
-# Runs in a loop with a configurable interval (default: 30 minutes).
-
+#!/usr/bin/env sh
+# Request a sync from the running server, which serializes manual/startup/periodic
+# jobs. With one argument, initialize that system only; otherwise update loaded ones.
 set -eu
-
-INTERVAL="${SYNC_INTERVAL:-1800}"
-STATUS_FILE="/tmp/.sync-status"
-LOG_FILE="/tmp/.sync-log"
-
-update_submodules() {
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)|running" > "$STATUS_FILE"
-
-  # Update only already-initialized submodules to their latest remote commit
-  {
-    git submodule update --remote --depth=1 2>&1 || true
-  } | tee -a "$LOG_FILE"
-
-  # Keep log to last 100 lines
-  tail -100 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
-
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)|done" > "$STATUS_FILE"
-}
-
-# Run once immediately on startup
-update_submodules
-
-# Then loop on interval
-while true; do
-  sleep "$INTERVAL"
-  update_submodules
-done
+cd "$(dirname "$0")"
+node - "$@" <<'NODE'
+const system = process.argv[2];
+fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/sync`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(system === undefined ? {} : { system })
+}).then(async response => {
+  console.log(await response.text());
+  if (!response.ok) process.exitCode = 1;
+}).catch(error => { console.error(error.message); process.exitCode = 1; });
+NODE

@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { createSyncManager, declaredSystems } = require('./submodule-sync');
 
 const THUMB_TYPES = ['Named_Boxarts', 'Named_Titles', 'Named_Snaps', 'Named_Logos'];
 
@@ -48,9 +49,12 @@ function listPngs(dirPath) {
     .map(entry => entry.name);
 }
 
-function createApp(repoRoot = __dirname) {
+function createApp(repoRoot = __dirname, options = {}) {
   const app = express();
   const REPO_ROOT = fs.realpathSync(repoRoot);
+  const sync = options.syncManager || createSyncManager(REPO_ROOT);
+  app.locals.sync = sync;
+  app.use(express.json({ limit: '2kb' }));
 
   function allowedSystems() {
     return fs.readdirSync(REPO_ROOT, { withFileTypes: true })
@@ -68,23 +72,24 @@ function createApp(repoRoot = __dirname) {
 
   // List all systems with thumbnail counts
   app.get('/api/systems', (req, res) => {
-    const entries = allowedSystems();
+    const downloadable = new Set(declaredSystems(REPO_ROOT));
+    const entries = [...new Set([...allowedSystems(), ...downloadable])];
     const systems = [];
     for (const name of entries) {
       const sysPath = resolveChild(REPO_ROOT, name, true);
-      if (!sysPath) continue;
+      if (!sysPath && !downloadable.has(name)) continue;
       let totalCount = 0;
       const types = {};
       for (const t of THUMB_TYPES) {
-        const tPath = resolveChild(sysPath, t, true);
+        const tPath = sysPath && resolveChild(sysPath, t, true);
         if (tPath) {
           const files = listPngs(tPath);
           types[t] = files.length;
           totalCount += files.length;
         }
       }
-      if (totalCount > 0) {
-        systems.push({ name, types, total: totalCount });
+      if (totalCount > 0 || downloadable.has(name)) {
+        systems.push({ name, types, total: totalCount, downloadable: downloadable.has(name) });
       }
     }
     systems.sort((a, b) => a.name.localeCompare(b.name));
@@ -134,36 +139,16 @@ function createApp(repoRoot = __dirname) {
     res.sendFile(filePath);
   });
 
-  // Sync status endpoint
-  app.get('/api/sync-status', (req, res) => {
-    const statusFile = '/tmp/.sync-status';
-    const logFile = '/tmp/.sync-log';
-    let status = 'idle';
-    let lastSync = null;
-    let log = '';
-    try {
-      const raw = fs.readFileSync(statusFile, 'utf8').trim();
-      const parts = raw.split('|');
-      lastSync = parts[0] || null;
-      status = parts[1] || 'idle';
-    } catch {}
-    try {
-      log = fs.readFileSync(logFile, 'utf8').trim().split('\n').slice(-20).join('\n');
-    } catch {}
-    res.json({ status, lastSync, log });
-  });
+  app.get('/api/sync-status', (req, res) => res.json(sync.getStatus()));
 
-  // Manual sync trigger endpoint
+  // Select one declared system to download, or update already-downloaded ones.
+  // Return promptly; the UI follows completion through /api/sync-status.
   app.post('/api/sync', (req, res) => {
-    const { exec } = require('child_process');
-    exec('git submodule update --remote --depth=1', { cwd: REPO_ROOT }, (err, stdout, stderr) => {
-      if (err) {
-        return res.status(500).json({ error: 'Sync failed', details: stderr });
-      }
-      const ts = new Date().toISOString();
-      fs.writeFileSync('/tmp/.sync-status', `${ts}|done`);
-      res.json({ status: 'done', lastSync: ts, output: stdout });
-    });
+    try {
+      res.status(202).json(sync.request(req.body?.system));
+    } catch (err) {
+      res.status(err.statusCode || 500).json({ error: err.message });
+    }
   });
 
   return app;
@@ -171,8 +156,21 @@ function createApp(repoRoot = __dirname) {
 
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
-  createApp().listen(PORT, '0.0.0.0', () => {
+  const app = createApp();
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    app.locals.sync.start({
+      intervalSeconds: Number(process.env.SYNC_INTERVAL || 1800)
+    });
     console.log(`Thumbnail browser running at http://0.0.0.0:${PORT}`);
+  });
+  const shutdown = () => { app.locals.sync.stop(); server.close(); };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  // nodemon uses SIGUSR2 for restarts. Stop and reap the detached Git process
+  // before allowing another server instance to start its own sync.
+  process.once('SIGUSR2', () => {
+    app.locals.sync.stop();
+    app.locals.sync.wait().finally(() => process.kill(process.pid, 'SIGUSR2'));
   });
 }
 

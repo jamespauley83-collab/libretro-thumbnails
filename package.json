@@ -4,10 +4,10 @@
   "description": "Web browser for the libretro-thumbnails collection",
   "main": "server.js",
   "scripts": {
-    "dev": "nodemon --watch server.js server.js",
+    "dev": "nodemon --watch server.js --watch submodule-sync.js server.js",
     "start": "node server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check test/server.test.js && node --check public/app.js"
+    "check": "node --check server.js && node --check submodule-sync.js && node --check test/server.test.js && node --check test/sync.test.js && node --check test/frontend.test.js && node --check public/app.js"
   },
   "dependencies": {
     "express": "^4.21.0"
