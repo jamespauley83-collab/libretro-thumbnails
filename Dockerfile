@@ -19,6 +19,9 @@ RUN git init && \
     git add .gitmodules && \
     git commit -q -m "init"
 
+RUN chown -R node:node /app
+USER node
+
 ENV PORT=3000
 ENV SYNC_INTERVAL=1800
 EXPOSE 3000
