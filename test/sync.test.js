@@ -123,6 +123,11 @@ test('async sync API returns 202, rejects duplicate/invalid requests and reports
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = system => fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system }) });
   assert.equal((await post('../outside')).status, 400);
+  for (const type of ['text/plain', 'application/x-www-form-urlencoded']) {
+    const formPost = await fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': type }, body: '' });
+    assert.equal(formPost.status, 415);
+  }
+  assert.equal((await (await fetch(base + '/api/sync-status')).json()).status, 'idle');
   assert.equal((await post(DEFAULT_SYSTEM)).status, 202);
   assert.equal((await post(DEFAULT_SYSTEM)).status, 409);
   assert.equal((await (await fetch(base + '/api/sync-status')).json()).status, 'running');

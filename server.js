@@ -144,6 +144,10 @@ function createApp(repoRoot = __dirname, options = {}) {
   // Select one declared system to download, or update already-downloaded ones.
   // Return promptly; the UI follows completion through /api/sync-status.
   app.post('/api/sync', (req, res) => {
+    // A cross-site form can post text/plain without a CORS preflight; only the app's JSON request may start downloads.
+    if (!req.is('application/json')) {
+      return res.status(415).json({ error: 'Send the request as JSON' });
+    }
     try {
       res.status(202).json(sync.request(req.body?.system));
     } catch (err) {
