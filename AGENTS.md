@@ -45,6 +45,6 @@ real-Git initialization fixtures and the existing image path/symlink regression
 suite; they do not download public thumbnail repositories.
 
 ## Notes
-- No external credentials or secrets are required.
+- Public browsing needs no credentials; manual sync requires SYNC_TOKEN. Never commit the token.
 - No database — all data is read from the filesystem.
 - Dependencies: `express` (runtime), `nodemon` (dev hot-reload).

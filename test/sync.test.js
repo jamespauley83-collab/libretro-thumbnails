@@ -117,11 +117,11 @@ test('async sync API returns 202, rejects duplicate/invalid requests and reports
   const root = fixture(t);
   let finish;
   const sync = createSyncManager(root, { runGit: () => new Promise(resolve => { finish = resolve; }) });
-  const server = createApp(root, { syncManager: sync }).listen(0, '127.0.0.1');
+  const server = createApp(root, { syncManager: sync, syncToken: 'fixture-token' }).listen(0, '127.0.0.1');
   t.after(() => new Promise(resolve => server.close(resolve)));
   await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const post = system => fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system }) });
+  const post = system => fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer fixture-token' }, body: JSON.stringify({ system }) });
   assert.equal((await post('../outside')).status, 400);
   for (const type of ['text/plain', 'application/x-www-form-urlencoded']) {
     const formPost = await fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': type }, body: '' });
@@ -232,11 +232,11 @@ test('production metadata-only repository downloads, retries and updates only th
   assert.equal(fs.existsSync(path.join(root, selected)), false);
   assert.equal(fs.existsSync(path.join(root, other)), false);
 
-  const server = createApp(root, { syncManager: manager }).listen(0, '127.0.0.1');
+  const server = createApp(root, { syncManager: manager, syncToken: 'fixture-token' }).listen(0, '127.0.0.1');
   t.after(() => new Promise(resolve => server.close(resolve)));
   await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const post = () => fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system: selected }) });
+  const post = () => fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer fixture-token' }, body: JSON.stringify({ system: selected }) });
   const initial = (await (await fetch(base + '/api/systems')).json()).systems;
   assert.equal(initial.length, 2);
   assert.ok(initial.every(system => system.downloadable && system.total === 0));

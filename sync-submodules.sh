@@ -5,8 +5,12 @@ set -eu
 cd "$(dirname "$0")"
 node - "$@" <<'NODE'
 const system = process.argv[2];
+if (!process.env.SYNC_TOKEN) {
+  console.error('Set SYNC_TOKEN to the server operator token.');
+  process.exit(1);
+}
 fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/sync`, {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.SYNC_TOKEN}` },
   body: JSON.stringify(system === undefined ? {} : { system })
 }).then(async response => {
   console.log(await response.text());

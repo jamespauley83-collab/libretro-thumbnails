@@ -60,6 +60,7 @@ sh update_modules.sh
 ### Running the Thumbnail Browser
 
 ```sh
+# Set SYNC_TOKEN in the server environment first (see operator access below).
 docker compose -f docker-compose.base44.yml up -d --build
 ```
 
@@ -89,13 +90,57 @@ syncs. A server restart clears its in-memory status; it never starts a new colle
 The shell helper no longer starts an independent background Git loop. Docker and
 `npm start`/`npm run dev` all use the server-owned scheduler. Restrict access to
 this management app to trusted users, since downloading a system uses server
-storage and network bandwidth. No credentials are required for public thumbnails.
+storage and network bandwidth. Public thumbnail browsing requires no credentials;
+manual synchronization requires the operator credential described below.
+
+#### Operator access and deployment validation
+
+`POST /api/sync` requires both `Content-Type: application/json` and
+`Authorization: Bearer <SYNC_TOKEN>`. Missing/wrong credentials return 401 without
+starting work. If `SYNC_TOKEN` is unset or empty, manual sync is disabled (503).
+There is no anonymous or loopback bypass. Browsing, images, and status remain
+available without authentication. Startup/periodic updates of already-loaded
+systems still run as before; set `SYNC_INTERVAL=0` to disable periodic updates.
+
+Generate a long random operator token, for example with
+`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`, and set
+`SYNC_TOKEN` through your deployment's secret/environment configuration. Do not
+commit it or put it in a URL. Share it only with trusted operators. Enter it in
+the browser's password field before Download/Update; the app keeps it in the page
+only, never in browser storage or a cookie, and clears it after a 401. Reload the
+page to clear it after use. The shell helper uses `SYNC_TOKEN` from its environment
+and exits before sending a request if it is missing. Rotate the server token and
+restart the app if access must be revoked. All operators share this credential;
+use an authenticated reverse proxy if individual accounts/audit are required.
+
+Compose and the production example bind the published port to `127.0.0.1`.
+For remote access, use an HTTPS reverse proxy with firewall/VPN restrictions;
+do not expose the unencrypted origin port. Forward the Authorization header,
+and do not enable permissive CORS on the sync endpoint. The Base44 Compose file
+is a development setup that installs tools as root; it does **not** use the
+non-root production Dockerfile. Use the production image for production service.
+
+Before rollout, identify the running host/container/proxy and record its current
+image and artwork/Git storage mounts. Back up/preserve that storage and its
+ownership; do not recreate volumes, run cleanup commands, or replace an existing
+mount with empty storage. Rebuild the updated image and configure the token;
+the production image still runs as `node` and needs write access to its existing
+artwork and Git metadata. Verify the effective port binding, proxy/firewall rules,
+HTTPS, and secret configuration on the actual host. Repository configuration
+alone cannot establish whether a deployed instance is protected or up to date.
+
+Verify normal lists and an existing image without credentials, and confirm an
+unauthorized JSON POST gets 401 (or 503 without a configured token). To check the
+credential without initiating downloads, send authenticated `text/plain` and
+expect 415. Confirm intentional synchronization using the isolated local test
+fixtures (`npm test`), or schedule a single approved small-system sync later on
+the deployment. Do not use a full-collection sync as a security smoke test.
 
 #### Production image
 
 ```sh
 docker build -t libretro-thumbnail-browser .
-docker run --rm -p 3000:3000 libretro-thumbnail-browser
+docker run --rm -p 127.0.0.1:3000:3000 -e SYNC_TOKEN libretro-thumbnail-browser
 ```
 
 The image contains the app and `.gitmodules` catalogue, not thumbnail collections

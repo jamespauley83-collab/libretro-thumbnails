@@ -294,3 +294,5 @@ body {
 .system-actions button:disabled { opacity: 0.5; cursor: wait; }
 #download-warning { font-size: 13px; color: var(--text-dim); flex-basis: 100%; }
 #sync-status { font-size: 13px; color: var(--text-dim); overflow-wrap: anywhere; }
+
+#sync-token { padding: 8px 10px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); max-width: 100%; }

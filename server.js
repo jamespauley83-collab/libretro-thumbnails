@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { createHash, timingSafeEqual } = require('crypto');
 const { createSyncManager, declaredSystems } = require('./submodule-sync');
 
 const THUMB_TYPES = ['Named_Boxarts', 'Named_Titles', 'Named_Snaps', 'Named_Logos'];
@@ -53,6 +54,8 @@ function createApp(repoRoot = __dirname, options = {}) {
   const app = express();
   const REPO_ROOT = fs.realpathSync(repoRoot);
   const sync = options.syncManager || createSyncManager(REPO_ROOT);
+  const syncToken = options.syncToken ?? process.env.SYNC_TOKEN;
+  const tokenDigest = syncToken ? createHash('sha256').update(syncToken).digest() : null;
   app.locals.sync = sync;
   app.use(express.json({ limit: '2kb' }));
 
@@ -147,6 +150,16 @@ function createApp(repoRoot = __dirname, options = {}) {
     // A cross-site form can post text/plain without a CORS preflight; only the app's JSON request may start downloads.
     if (!req.is('application/json')) {
       return res.status(415).json({ error: 'Send the request as JSON' });
+    }
+    if (!tokenDigest) {
+      return res.status(503).json({ error: 'Manual synchronization is disabled: configure SYNC_TOKEN' });
+    }
+    const authorization = req.get('Authorization') || '';
+    const supplied = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    const suppliedDigest = createHash('sha256').update(supplied).digest();
+    if (!supplied || !timingSafeEqual(tokenDigest, suppliedDigest)) {
+      res.set('WWW-Authenticate', 'Bearer');
+      return res.status(401).json({ error: 'A valid operator token is required' });
     }
     try {
       res.status(202).json(sync.request(req.body?.system));

@@ -247,3 +247,62 @@ test('trusted repository root can itself use a canonical alias', async () => {
     await new Promise(resolve => alternate.close(resolve));
   }
 });
+
+test('sync authentication rejects unauthorized clients without invoking the manager', async t => {
+  const calls = [];
+  const syncManager = { getStatus: () => ({ status: 'idle' }), request: system => {
+    calls.push(system);
+    if (system === 'busy') throw Object.assign(new Error('Already running'), { statusCode: 409 });
+    return { status: 'running', system };
+  } };
+  const app = createApp(root, { syncManager, syncToken: 'operator-test-token' });
+  const secured = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => secured.once('listening', resolve));
+  t.after(() => new Promise(resolve => secured.close(resolve)));
+  const base = `http://127.0.0.1:${secured.address().port}`;
+  const post = (headers = {}, body = JSON.stringify({ system: SYSTEM })) => fetch(base + '/api/sync', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body
+  });
+  for (const headers of [{}, { Authorization: 'Bearer wrong' }, { Authorization: 'Basic operator-test-token' },
+    { Authorization: 'Bearer' }, { Authorization: 'Bearer operator-test-token-extra' },
+    { Cookie: 'SYNC_TOKEN=operator-test-token' }, { 'X-Forwarded-For': '127.0.0.1' }]) {
+    const result = await post(headers);
+    assert.equal(result.status, 401);
+    assert.equal(result.headers.get('www-authenticate'), 'Bearer');
+    assert.ok(!(await result.text()).includes('operator-test-token'));
+  }
+  assert.equal((await fetch(base + '/api/sync?token=operator-test-token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+  })).status, 401);
+  const auth = { Authorization: 'Bearer operator-test-token' };
+  assert.equal((await post({ ...auth, 'Content-Type': 'text/plain' }, '{}')).status, 415);
+  assert.equal((await post(auth, '{')).status, 400);
+  assert.equal((await post(auth, JSON.stringify({ system: 'x'.repeat(3000) }))).status, 413);
+  assert.deepEqual(calls, []);
+  for (const url of ['/api/systems', listingUrl(SYSTEM), imageUrl(SYSTEM, TYPES[0], validFiles[0]), '/api/sync-status', '/']) {
+    assert.equal((await fetch(base + url)).status, 200);
+  }
+  assert.equal((await post(auth)).status, 202);
+  assert.equal((await post(auth, '{}')).status, 202);
+  assert.equal((await post(auth, '{"system":"busy"}')).status, 409);
+  assert.deepEqual(calls, [SYSTEM, undefined, 'busy']);
+});
+
+test('missing or empty operator token disables manual sync but preserves browsing', async t => {
+  for (const syncToken of ['', undefined]) {
+    let called = false;
+    // An explicit empty token overrides any environment credential.
+    const app = createApp(root, { syncToken: syncToken ?? '', syncManager: {
+      getStatus: () => ({ status: 'idle' }), request: () => { called = true; }
+    } });
+    const instance = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => instance.once('listening', resolve));
+    t.after(() => new Promise(resolve => instance.close(resolve)));
+    const base = `http://127.0.0.1:${instance.address().port}`;
+    assert.equal((await fetch(base + '/api/sync', { method: 'POST', headers: {
+      'Content-Type': 'application/json', Authorization: 'Bearer anything'
+    }, body: '{}' })).status, 503);
+    assert.equal((await fetch(base + '/api/systems')).status, 200);
+    assert.equal(called, false);
+  }
+});
