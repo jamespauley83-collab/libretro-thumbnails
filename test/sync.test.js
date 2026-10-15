@@ -125,7 +125,11 @@ test('async sync API returns 202, rejects duplicate/invalid requests and reports
   assert.equal((await post('../outside')).status, 400);
   for (const type of ['text/plain', 'application/x-www-form-urlencoded']) {
     const formPost = await fetch(base + '/api/sync', { method: 'POST', headers: { 'Content-Type': type }, body: '' });
-    assert.equal(formPost.status, 415);
+    assert.equal(formPost.status, 401);
+    const authorizedForm = await fetch(base + '/api/sync', { method: 'POST', headers: {
+      'Content-Type': type, Authorization: 'Bearer fixture-token'
+    }, body: '{}' });
+    assert.equal(authorizedForm.status, 415);
   }
   assert.equal((await (await fetch(base + '/api/sync-status')).json()).status, 'idle');
   assert.equal((await post(DEFAULT_SYSTEM)).status, 202);

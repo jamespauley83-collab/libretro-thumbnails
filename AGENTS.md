@@ -34,6 +34,9 @@ selected-system request. Updates run every `SYNC_INTERVAL` seconds (default
 remain visible. Do not add a separate background sync loop.
 
 - `GET /api/sync-status` — returns current status, last successful sync, and error/log
+- `GET /api/sync-auth` — non-mutating operator-token check; 200 for valid credentials,
+  401 for missing/wrong credentials, 503 if SYNC_TOKEN is unset/empty. Uses the
+  same guard as POST /api/sync before body parsing; never starts downloads.
 - `POST /api/sync` — returns 202 and starts an asynchronous sync; JSON `{system}`
   initializes/updates exactly that declared system; omission updates loaded ones only
 - `sh sync-submodules.sh [system]` — asks the running server to perform that same sync

@@ -275,6 +275,15 @@ test('sync authentication rejects unauthorized clients without invoking the mana
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
   })).status, 401);
   const auth = { Authorization: 'Bearer operator-test-token' };
+  // Auth must run before both content-type validation and the body parser.
+  for (const headers of [{}, { Authorization: 'Bearer wrong' }]) {
+    for (const [type, body] of [
+      ['text/plain', '{}'], ['application/x-www-form-urlencoded', 'system=x'],
+      ['application/json', '{'], ['application/json', JSON.stringify({ system: 'x'.repeat(3000) })]
+    ]) {
+      assert.equal((await post({ ...headers, 'Content-Type': type }, body)).status, 401);
+    }
+  }
   assert.equal((await post({ ...auth, 'Content-Type': 'text/plain' }, '{}')).status, 415);
   assert.equal((await post(auth, '{')).status, 400);
   assert.equal((await post(auth, JSON.stringify({ system: 'x'.repeat(3000) }))).status, 413);
@@ -302,7 +311,115 @@ test('missing or empty operator token disables manual sync but preserves browsin
     assert.equal((await fetch(base + '/api/sync', { method: 'POST', headers: {
       'Content-Type': 'application/json', Authorization: 'Bearer anything'
     }, body: '{}' })).status, 503);
+    for (const headers of [{}, { Authorization: 'Bearer anything' }]) {
+      const result = await fetch(base + '/api/sync-auth', { headers });
+      assert.equal(result.status, 503);
+      assert.equal(result.headers.get('cache-control'), 'no-store');
+    }
+    assert.equal((await fetch(base + '/api/sync', { method: 'POST', headers: {
+      'Content-Type': 'application/json'
+    }, body: '{' })).status, 503);
     assert.equal((await fetch(base + '/api/systems')).status, 200);
     assert.equal(called, false);
   }
+});
+
+test('credential verification distinguishes tokens without changing sync state or artwork', async t => {
+  const calls = [];
+  const status = { status: 'idle', revision: 7, lastSync: null };
+  const artwork = path.join(root, SYSTEM, TYPES[0], validFiles[0]);
+  const before = fs.readFileSync(artwork);
+  const app = createApp(root, { syncToken: 'operator-test-token', syncManager: {
+    getStatus: () => ({ ...status }), request: system => { calls.push(system); status.revision++; }
+  } });
+  app.set('env', 'test');
+  const instance = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => instance.once('listening', resolve));
+  t.after(() => new Promise(resolve => instance.close(resolve)));
+  const base = `http://127.0.0.1:${instance.address().port}`;
+  const auth = { Authorization: 'Bearer operator-test-token' };
+  const verify = (headers = {}, query = '') => fetch(base + '/api/sync-auth' + query, { headers });
+  const initialStatus = await (await fetch(base + '/api/sync-status')).json();
+
+  for (const query of ['', '?system=' + encodeURIComponent(SYSTEM), '?system=..&download=true']) {
+    const result = await verify(auth, query);
+    assert.equal(result.status, 200);
+    assert.deepEqual(await result.json(), { authenticated: true });
+    assert.equal(result.headers.get('cache-control'), 'no-store');
+    assert.match(result.headers.get('vary'), /\bAuthorization\b/);
+  }
+  const etag = (await verify(auth)).headers.get('etag');
+  for (const headers of [{}, { Authorization: 'Bearer wrong' }, { Authorization: 'Basic operator-test-token' },
+    { Authorization: 'Bearer' }, { Authorization: 'Bearer operator-test-token-extra' },
+    { Cookie: 'SYNC_TOKEN=operator-test-token' }, { 'X-Forwarded-For': '127.0.0.1' },
+    { 'If-None-Match': etag }]) {
+    const result = await verify(headers, '?token=operator-test-token');
+    assert.equal(result.status, 401);
+    assert.equal(result.headers.get('www-authenticate'), 'Bearer');
+    assert.equal(result.headers.get('cache-control'), 'no-store');
+    assert.match(result.headers.get('vary'), /\bAuthorization\b/);
+    assert.ok(!(await result.text()).includes('operator-test-token'));
+  }
+  // Use raw HTTP: fetch intentionally forbids GET bodies. Neither a system in
+  // a body nor malformed/oversized JSON may reach the sync manager.
+  for (const headers of [{}, { Authorization: 'Bearer wrong' }, auth]) {
+    for (const [body, authorizedStatus] of [
+      [JSON.stringify({ system: SYSTEM }), 200], ['{', 400],
+      [JSON.stringify({ system: 'x'.repeat(3000) }), 413]
+    ]) {
+      const response = await new Promise((resolve, reject) => {
+        const req = http.request(base + '/api/sync-auth', { method: 'GET', headers: {
+          'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers
+        } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+        req.on('error', reject);
+        req.end(body);
+      });
+      assert.equal(response, headers === auth ? authorizedStatus : 401);
+    }
+  }
+  assert.equal((await fetch(base + '/api/sync-auth', {
+    method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ system: SYSTEM })
+  })).status, 404);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await (await fetch(base + '/api/sync-status')).json(), initialStatus);
+  assert.deepEqual(fs.readFileSync(artwork), before);
+  assert.deepEqual(Buffer.from(await (await fetch(base + imageUrl(SYSTEM, TYPES[0], validFiles[0]))).arrayBuffer()), before);
+});
+
+test('verification through a proxy fails when Authorization is stripped', async t => {
+  let called = false;
+  const app = createApp(root, { syncToken: 'operator-test-token', syncManager: {
+    getStatus: () => ({ status: 'idle' }), request: () => { called = true; }
+  } });
+  const origin = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => origin.once('listening', resolve));
+  t.after(() => new Promise(resolve => origin.close(resolve)));
+  let stripAuthorization = false;
+  const proxy = http.createServer((req, res) => {
+    const headers = { ...req.headers };
+    if (stripAuthorization) delete headers.authorization;
+    const upstream = http.request({ hostname: '127.0.0.1', port: origin.address().port,
+      path: req.url, method: req.method, headers }, response => {
+      res.writeHead(response.statusCode, response.headers);
+      response.pipe(res);
+    });
+    upstream.on('error', () => { res.writeHead(502); res.end(); });
+    req.pipe(upstream);
+  });
+  proxy.listen(0, '127.0.0.1');
+  await new Promise(resolve => proxy.once('listening', resolve));
+  t.after(() => new Promise(resolve => proxy.close(resolve)));
+  const url = `http://127.0.0.1:${proxy.address().port}/api/sync-auth`;
+  for (const strip of [false, true]) {
+    stripAuthorization = strip;
+    for (const [headers, expected] of [[{}, 401], [{ Authorization: 'Bearer wrong' }, 401],
+      [{ Authorization: 'Bearer operator-test-token' }, strip ? 401 : 200]]) {
+      const result = await fetch(url, { headers });
+      assert.equal(result.status, expected);
+      assert.equal(result.headers.get('cache-control'), 'no-store');
+      if (expected === 200) assert.deepEqual(await result.json(), { authenticated: true });
+      else await result.text();
+    }
+  }
+  assert.equal(called, false);
 });
