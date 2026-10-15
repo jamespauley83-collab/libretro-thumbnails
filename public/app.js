@@ -214,15 +214,21 @@ function renderSync() {
 
 async function startSync() {
   if (!state.selectedSystem || state.submittingSync || state.sync?.status === 'running') return;
+  const token = document.getElementById('sync-token').value;
+  if (!token) {
+    syncStatus.textContent = 'Enter your operator token to start synchronization.';
+    return;
+  }
   state.submittingSync = true;
   const requestId = ++state.syncRequest;
   renderSync();
   try {
     const response = await fetch('/api/sync', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ system: state.selectedSystem })
     });
     const result = await response.json();
+    if (response.status === 401) document.getElementById('sync-token').value = '';
     if (!response.ok) throw new Error(result.error || 'Unable to start download');
     if (requestId !== state.syncRequest) return;
     state.sync = result;

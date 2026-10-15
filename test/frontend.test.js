@@ -22,6 +22,7 @@ function harness() {
   const state = run('state');
   state.systems = [{ name: SYSTEM, total: 0, types: {}, downloadable: true }];
   state.selectedSystem = SYSTEM;
+  context.document.getElementById('sync-token').value = 'fixture-token';
   return { context, state, elements, run };
 }
 const response = data => ({ ok: true, json: async () => data });
@@ -91,4 +92,25 @@ test('later thumbnail selection wins when responses arrive out of order', async 
   await first;
   assert.match(elements.get('thumbnail-grid').innerHTML, /New\.png/);
   assert.doesNotMatch(elements.get('thumbnail-grid').innerHTML, /Old\.png/);
+});
+
+test('sync requires a token and sends it only in the authorization header', async () => {
+  const { context, run, elements } = harness();
+  elements.get('sync-token').value = '';
+  let calls = 0;
+  context.fetch = async (url, options) => {
+    calls++;
+    assert.equal(url, '/api/sync');
+    assert.equal(options.headers.Authorization, 'Bearer fixture-token');
+    assert.deepEqual(JSON.parse(options.body), { system: SYSTEM });
+    return { ok: false, status: 401, json: async () => ({ error: 'A valid operator token is required' }) };
+  };
+  await run('startSync()');
+  assert.equal(calls, 0);
+  assert.match(elements.get('sync-status').textContent, /operator token/);
+  elements.get('sync-token').value = 'fixture-token';
+  await run('startSync()');
+  assert.equal(calls, 1);
+  assert.equal(elements.get('sync-token').value, '');
+  assert.match(elements.get('sync-status').textContent, /valid operator token/);
 });

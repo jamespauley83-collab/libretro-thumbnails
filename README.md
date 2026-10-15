@@ -60,6 +60,7 @@ sh update_modules.sh
 ### Running the Thumbnail Browser
 
 ```sh
+# Set SYNC_TOKEN in the server environment first (see operator access below).
 docker compose -f docker-compose.base44.yml up -d --build
 ```
 
@@ -83,19 +84,137 @@ syncs. A server restart clears its in-memory status; it never starts a new colle
   starts that one system; an omitted system updates downloaded systems only
 - A sync request returns HTTP 202 immediately; HTTP 409 means another sync is running
 - `GET /api/sync-status` returns progress, last successful sync, and any error/log
+- `GET /api/sync-auth` verifies the operator credential without requesting any sync
 - `sh sync-submodules.sh "Nintendo - Nintendo Entertainment System"` requests the
   same serialized sync from a running server (without an argument, updates loaded systems)
 
 The shell helper no longer starts an independent background Git loop. Docker and
 `npm start`/`npm run dev` all use the server-owned scheduler. Restrict access to
 this management app to trusted users, since downloading a system uses server
-storage and network bandwidth. No credentials are required for public thumbnails.
+storage and network bandwidth. Public thumbnail browsing requires no credentials;
+manual synchronization requires the operator credential described below.
+
+#### Operator access and deployment validation
+
+`POST /api/sync` requires both `Content-Type: application/json` and
+`Authorization: Bearer <SYNC_TOKEN>`. Missing/wrong credentials return 401 without
+starting work. If `SYNC_TOKEN` is unset or empty, manual sync is disabled (503).
+The same guard protects `GET /api/sync-auth`. Authentication runs before JSON
+parsing and Content-Type validation: even malformed or oversized unauthorized
+requests return 401 (503 if unconfigured). After successful authentication,
+sync still rejects non-JSON requests with 415, malformed JSON with 400, and
+JSON bodies larger than 2 KB with 413.
+There is no anonymous or loopback bypass. Browsing, images, and status remain
+available without authentication. Startup/periodic updates of already-loaded
+systems still run as before; set `SYNC_INTERVAL=0` to disable periodic updates.
+
+Generate a long random operator token, for example with
+`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`, and set
+`SYNC_TOKEN` through your deployment's secret/environment configuration. Do not
+commit it or put it in a URL. Share it only with trusted operators. Enter it in
+the browser's password field before Download/Update; the app keeps it in the page
+only, never in browser storage or a cookie, and clears it after a 401. Reload the
+page to clear it after use. The shell helper uses `SYNC_TOKEN` from its environment
+and exits before sending a request if it is missing. Rotate the server token and
+restart the app if access must be revoked. All operators share this credential;
+use an authenticated reverse proxy if individual accounts/audit are required.
+
+Compose and the production example bind the published port to `127.0.0.1`.
+For remote access, use an HTTPS reverse proxy with firewall/VPN restrictions;
+do not expose the unencrypted origin port. Forward the Authorization header,
+and do not enable permissive CORS on the sync endpoint. The Base44 Compose file
+is a development setup that installs tools as root; it does **not** use the
+non-root production Dockerfile. Use the production image for production service.
+
+Before rollout, identify the running host/container/proxy and record its current
+image and artwork/Git storage mounts. Back up/preserve that storage and its
+ownership; do not recreate volumes, run cleanup commands, or replace an existing
+mount with empty storage. Rebuild the updated image and configure the token;
+the production image still runs as `node` and needs write access to its existing
+artwork and Git metadata. Verify the effective port binding, proxy/firewall rules,
+HTTPS, and secret configuration on the actual host. Repository configuration
+alone cannot establish whether a deployed instance is protected or up to date.
+
+**No-download credential check.** Use `GET /api/sync-auth` on the running
+instance. It returns only `{ "authenticated": true }` after accepting the token;
+it never invokes the sync manager, selects a system, updates Git metadata, or
+writes artwork. It ignores query parameters such as `system`. Responses include
+`Cache-Control: no-store` and `Vary: Authorization`; configure the proxy to bypass
+caching for this endpoint. Do not use a 415 response as the credential check.
+
+Run these commands in Bash, with the actual browser-facing HTTPS URL (including
+any proxy path prefix), not a repository URL or the Base44 editor URL. Use
+`http://127.0.0.1:3000` only when checking directly on the running host. Enter the
+existing server token at the hidden prompt; do not generate a replacement just
+for verification. Keep shell tracing (`set -x`) off. The header is passed on
+stdin to avoid putting the token in curl's command-line arguments. These are
+GETs only; none calls `POST /api/sync`, and curl does not follow redirects.
+
+```bash
+BASE_URL='https://YOUR-ACTUAL-PREVIEW-OR-PROXY-URL'
+read -rsp 'Existing operator token: ' VERIFY_TOKEN; printf '\n'
+if [ -z "$VERIFY_TOKEN" ]; then
+  printf 'No token entered; verification not run.\n'
+else
+  # Missing header: expect 401 and WWW-Authenticate: Bearer.
+  curl --silent --show-error --max-time 15 --include "$BASE_URL/api/sync-auth"
+  # Incorrect token (guaranteed different): expect 401.
+  printf 'Authorization: Bearer %sx\n' "$VERIFY_TOKEN" |
+    curl --silent --show-error --max-time 15 --include --header @- "$BASE_URL/api/sync-auth"
+  # Configured token: expect 200 and exactly {"authenticated":true}.
+  printf 'Authorization: Bearer %s\n' "$VERIFY_TOKEN" |
+    curl --silent --show-error --max-time 15 --include --header @- "$BASE_URL/api/sync-auth"
+fi
+unset VERIFY_TOKEN
+```
+
+| Request / server condition | Required result |
+| --- | --- |
+| Configured token, no Authorization header | 401, Bearer challenge |
+| Configured token, incorrect credential | 401, Bearer challenge |
+| Configured token, matching credential | 200, JSON `{"authenticated":true}` |
+| Proxy strips Authorization from the matching credential | 401, never success |
+| Server token unset or empty | 503, verification and manual sync disabled |
+
+Require the complete 401 / 401 / 200 sequence through the actual public proxy
+path. A redirect, sign-in page, HTML 200, 404, 415, or 503 is **not** a successful
+credential verification. If the valid token gets 401 through the proxy, repeat
+the same GET directly on the host: a direct 200 with proxy 401 points to header
+forwarding or routing to a differently configured instance. Both returning 401
+means the supplied token has not been accepted. Do not print the server token
+or place it in query parameters while diagnosing this.
+
+For Base44 preview, first confirm which app/preview URL runs this checkout and
+which commit it serves. `.base44/environment.json` declares preview port 3000,
+a Compose start command, and no secrets; it does not establish that `SYNC_TOKEN`
+has been configured. Supply the secret through the actual runtime environment
+so Compose receives it. If a container terminal is available, check presence
+without exposing its value:
+
+```sh
+docker compose -f docker-compose.base44.yml exec -T web node -e \
+  "console.log(process.env.SYNC_TOKEN ? 'SYNC_TOKEN configured' : 'Manual sync disabled')"
+```
+
+Run the GET checks against the existing instance; do not restart it just to
+test credentials. Startup can update already-loaded systems even with
+`SYNC_INTERVAL=0`; that setting disables only periodic updates. The verification
+endpoint itself does not start or alter scheduled work. Verify anonymous lists
+and an existing image separately, without clicking Download/Update.
+
+Record the deployed commit, URL, date, and observed results separately from
+`npm test` / `npm run check`. Passing local tests does not verify a running
+Base44 preview, its secret configuration, or its reverse proxy. If preview
+access requires reconnecting the Base44 account, deployment verification remains
+pending until access is restored. Intentional synchronization is covered by the
+isolated local test fixtures (`npm test`); do not use a full-collection sync or
+an authenticated JSON POST as a security smoke test.
 
 #### Production image
 
 ```sh
 docker build -t libretro-thumbnail-browser .
-docker run --rm -p 3000:3000 libretro-thumbnail-browser
+docker run --rm -p 127.0.0.1:3000:3000 -e SYNC_TOKEN libretro-thumbnail-browser
 ```
 
 The image contains the app and `.gitmodules` catalogue, not thumbnail collections
